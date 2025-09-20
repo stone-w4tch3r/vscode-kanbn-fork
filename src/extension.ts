@@ -3,10 +3,14 @@ import * as path from "path"
 import KanbnStatusBarItem from "./KanbnStatusBarItem"
 import KanbnBoardPanel from "./KanbnBoardPanel"
 import KanbnBurndownPanel from "./KanbnBurndownPanel"
+import { KanbnBoardEditorProvider } from "./KanbnBoardEditorProvider"
 import { Kanbn } from "@samgiz/kanbn/src/main"
 import * as fs from "fs"
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  // Register the custom editor provider
+  context.subscriptions.push(KanbnBoardEditorProvider.register(context))
+
   const kanbnStatusBarItem: KanbnStatusBarItem = new KanbnStatusBarItem(context, null)
   const boardCache = new Map<string, KanbnTuple>()
   class KanbnTuple {

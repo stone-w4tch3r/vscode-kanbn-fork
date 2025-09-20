@@ -40,7 +40,8 @@
     "url": "https://github.com/samgiz/vscode-kanbn.git"
   },
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCustomEditor:kanbn.board"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -79,6 +80,18 @@
         "command": "kanbn.restoreTasks",
         "title": "Restore tasks",
         "category": "Kanbn"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "kanbn.board",
+        "displayName": "Kanbn Board",
+        "selector": [
+          {
+            "filenamePattern": "**/.kanbn/*.md"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "configuration": {
