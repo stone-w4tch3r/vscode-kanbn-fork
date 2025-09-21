@@ -3,7 +3,6 @@ import * as path from "path"
 import getNonce from "./getNonce"
 import { Kanbn, index as kanbn_index, task as kanbn_task } from "@samgiz/kanbn/src/main"
 import { VscodeFileSystemAdapter } from "./VscodeFileSystemAdapter"
-import KanbnTaskPanel from "./KanbnTaskPanel"
 
 const sortByFields: Record<string, string> = {
   Name: "name",
@@ -205,33 +204,30 @@ export class KanbnBoardEditorProvider implements vscode.CustomEditorProvider<Kan
 
   private static readonly viewType = "kanbn.board"
 
-  private readonly openedTaskPanels = new Map<string, KanbnTaskPanel>()
+  // Note: Task panels are now handled by custom editor, so this map is no longer needed
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   public showTaskPanel(document: KanbnBoardDocument, taskId: string | null, column: string | null = null): void {
-    let panel: KanbnTaskPanel
-    if (taskId == null || !this.openedTaskPanels.has(taskId)) {
-      // Get workspace path from document URI
+    console.log("[TASK DEBUG] showTaskPanel called with taskId:", taskId, "column:", column)
+    if (taskId) {
+      // Open existing task using custom editor
       const kanbnDir = path.dirname(document.uri.fsPath)
-      const workspacePath = path.dirname(kanbnDir)
+      const taskUri = vscode.Uri.file(path.join(kanbnDir, "tasks", `${taskId}.md`))
+      console.log("[TASK DEBUG] Opening task with URI:", taskUri.toString())
 
-      panel = new KanbnTaskPanel(
-        this.context.extensionPath,
-        workspacePath,
-        document.kanbn,
-        ".kanbn", // kanbn folder name
-        taskId,
-        column,
-        this.openedTaskPanels
-      )
-      if (taskId != null) {
-        this.openedTaskPanels.set(taskId, panel)
-      }
+      vscode.commands.executeCommand("vscode.openWith", taskUri, "kanbn.task")
+        .then(() => {
+          console.log("[TASK DEBUG] vscode.openWith command executed successfully")
+        }, (error) => {
+          console.log("[TASK DEBUG] Error executing vscode.openWith:", error)
+        })
     } else {
-      panel = this.openedTaskPanels.get(taskId) as KanbnTaskPanel
+      // For new tasks, we'll need to create a temporary file or use a different approach
+      // This is more complex and might need a different solution
+      console.log("[TASK DEBUG] New task creation not yet implemented")
+      vscode.window.showInformationMessage("Creating new tasks through custom editor is not yet implemented")
     }
-    void panel.show()
   }
 
   async openCustomDocument(

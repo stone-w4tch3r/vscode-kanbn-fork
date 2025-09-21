@@ -41,7 +41,8 @@
   },
   "activationEvents": [
     "onStartupFinished",
-    "onCustomEditor:kanbn.board"
+    "onCustomEditor:kanbn.board",
+    "onCustomEditor:kanbn.task"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -88,7 +89,17 @@
         "displayName": "Kanbn Board",
         "selector": [
           {
-            "filenamePattern": "**/.kanbn/*.md"
+            "filenamePattern": "**/.kanbn/index.md"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "kanbn.task",
+        "displayName": "Kanbn Task",
+        "selector": [
+          {
+            "filenamePattern": "**/.kanbn/tasks/*.md"
           }
         ],
         "priority": "default"

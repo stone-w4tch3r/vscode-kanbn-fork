@@ -4,12 +4,20 @@ import KanbnStatusBarItem from "./KanbnStatusBarItem"
 import KanbnBoardPanel from "./KanbnBoardPanel"
 import KanbnBurndownPanel from "./KanbnBurndownPanel"
 import { KanbnBoardEditorProvider } from "./KanbnBoardEditorProvider"
+import { KanbnTaskEditorProvider } from "./KanbnTaskEditorProvider"
 import { Kanbn } from "@samgiz/kanbn/src/main"
 import * as fs from "fs"
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  // Register the custom editor provider
+  console.log("[TASK DEBUG] Extension activation started")
+
+  // Register the custom editor providers
+  console.log("[TASK DEBUG] Registering KanbnBoardEditorProvider")
   context.subscriptions.push(KanbnBoardEditorProvider.register(context))
+  console.log("[TASK DEBUG] Registering KanbnTaskEditorProvider")
+  context.subscriptions.push(KanbnTaskEditorProvider.register(context))
+
+  console.log("[TASK DEBUG] Custom editor providers registered")
 
   const kanbnStatusBarItem: KanbnStatusBarItem = new KanbnStatusBarItem(context, null)
   const boardCache = new Map<string, KanbnTuple>()
