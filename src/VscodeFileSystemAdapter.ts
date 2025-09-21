@@ -87,93 +87,70 @@ export class VscodeFileSystemAdapter {
       return
     }
 
-    // For other files, store in our virtual file system only
-    // We should only be writing to files that are explicitly being edited
-    this.fileContentMap.set(normalizedPath, data)
-    this.fileExistsMap.set(normalizedPath, true)
-    this.onDidChangeEmitter.fire(vscode.Uri.file(filePath))
+    // For other files (like task files), write directly to the real file system
+    // This ensures file watchers detect changes and the board refreshes
+    try {
+      await fs.promises.writeFile(filePath, data)
+    } catch (error) {
+      console.error(`Could not write to file system: ${filePath}`, error)
+      throw error
+    }
   }
 
   /**
-   * Create directory - no-op in virtual file system
+   * Create directory - use real file system for non-virtual directories
    */
   async mkdir(dirPath: string, options?: { recursive?: boolean }): Promise<void> {
-    // In a virtual file system, we don't need to actually create directories
-    // Just mark them as existing
-    const normalizedPath = this.normalizePath(dirPath)
-    this.fileExistsMap.set(normalizedPath, true)
+    // Use real file system for directory creation
+    try {
+      await fs.promises.mkdir(dirPath, options)
+    } catch (error) {
+      // Ignore if directory already exists
+      if ((error as any).code !== 'EEXIST') {
+        throw error
+      }
+    }
   }
 
   /**
    * Rename file
    */
   async rename(oldPath: string, newPath: string): Promise<void> {
-    const normalizedOldPath = this.normalizePath(oldPath)
-    const normalizedNewPath = this.normalizePath(newPath)
-
-    const content = this.fileContentMap.get(normalizedOldPath)
-    if (content === undefined) {
+    // Use real file system for file operations
+    try {
+      await fs.promises.rename(oldPath, newPath)
+    } catch (error) {
       throw new Error(`ENOENT: no such file or directory, rename '${oldPath}' -> '${newPath}'`)
     }
-
-    this.fileContentMap.set(normalizedNewPath, content)
-    this.fileContentMap.delete(normalizedOldPath)
-    this.fileExistsMap.set(normalizedNewPath, true)
-    this.fileExistsMap.delete(normalizedOldPath)
-
-    this.onDidChangeEmitter.fire(vscode.Uri.file(newPath))
   }
 
   /**
    * Delete file
    */
   async unlink(filePath: string): Promise<void> {
-    const normalizedPath = this.normalizePath(filePath)
-
-    this.fileContentMap.delete(normalizedPath)
-    this.fileExistsMap.delete(normalizedPath)
-    this.onDidChangeEmitter.fire(vscode.Uri.file(filePath))
+    // Use real file system for file deletion
+    try {
+      await fs.promises.unlink(filePath)
+    } catch (error) {
+      // Ignore if file doesn't exist
+      if ((error as any).code !== 'ENOENT') {
+        throw error
+      }
+    }
   }
 
   /**
    * List files matching a glob pattern
-   * This is a simplified implementation for the kanbn use case
+   * Use real file system since we're not virtualizing task files anymore
    */
   async glob(pattern: string): Promise<string[]> {
-    const results: string[] = []
-
-    // First, add files from virtual file system
-    const lastSlash = pattern.lastIndexOf('/')
-    const directory = pattern.substring(0, lastSlash)
-    const filePattern = pattern.substring(lastSlash + 1)
-
-    // Simple pattern matching for *.md files
-    if (filePattern === '*.md') {
-      for (const [filePath] of this.fileContentMap) {
-        if (filePath.startsWith(this.normalizePath(directory)) && filePath.endsWith('.md')) {
-          results.push(filePath)
-        }
-      }
-    }
-
-    // Fall back to real file system using the standard glob library
     try {
       const glob = require("glob-promise")
-      const realFiles = await glob(pattern)
-
-      // Add real files that aren't already in virtual system
-      for (const realFile of realFiles) {
-        const normalizedReal = this.normalizePath(realFile)
-        if (!this.fileContentMap.has(normalizedReal)) {
-          results.push(realFile)
-        }
-      }
+      return await glob(pattern)
     } catch (error) {
-      // If glob fails, that's okay - we'll just use virtual files
-      console.warn(`Could not glob real file system: ${pattern}`, error)
+      console.warn(`Could not glob file system: ${pattern}`, error)
+      return []
     }
-
-    return results
   }
 
   /**
