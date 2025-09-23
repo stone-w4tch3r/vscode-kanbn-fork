@@ -80,15 +80,20 @@ export class VscodeFileSystemAdapter {
    */
   async writeFile(filePath: string, data: string): Promise<void> {
     const normalizedPath = this.normalizePath(filePath)
+    console.log('VscodeFileSystemAdapter.writeFile called:', filePath)
+    console.log('Document URI:', this.documentUri.fsPath)
+    console.log('Is main file?', this.isMainIndexFile(normalizedPath))
 
-    // For the main index file, we need to update the document
+    // If this is the document we're managing, update through our callback
     if (this.isMainIndexFile(normalizedPath)) {
+      console.log('Updating document content through callback')
       this.setDocumentContent(data)
       return
     }
 
-    // For other files (like task files), write directly to the real file system
+    // For other files, write directly to the real file system
     // This ensures file watchers detect changes and the board refreshes
+    console.log('Writing to file system directly')
     try {
       await fs.promises.writeFile(filePath, data)
     } catch (error) {
@@ -188,5 +193,15 @@ export class VscodeFileSystemAdapter {
   private isMainIndexFile(normalizedPath: string): boolean {
     const documentPath = this.normalizePath(this.documentUri.fsPath)
     return normalizedPath === documentPath
+  }
+
+  /**
+   * Find if a file is currently open in VSCode
+   */
+  private findOpenDocument(normalizedPath: string): vscode.TextDocument | undefined {
+    return vscode.workspace.textDocuments.find(doc => {
+      const docPath = this.normalizePath(doc.uri.fsPath)
+      return docPath === normalizedPath
+    })
   }
 }

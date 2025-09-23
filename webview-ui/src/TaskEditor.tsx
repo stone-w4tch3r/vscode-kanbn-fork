@@ -52,6 +52,7 @@ const EditableMarkdown = ({
   inputClassnames,
   inputId = "",
   defaultValue = "",
+  onBlur,
 }): JSX.Element => {
   const { register, watch } = formMethods
   const [isFocused, setIsFocused] = useState(false)
@@ -63,6 +64,9 @@ const EditableMarkdown = ({
 
   const handleBlur = (): void => {
     setIsFocused(false)
+    if (onBlur) {
+      onBlur()
+    }
   }
 
   return (
@@ -160,12 +164,15 @@ const TaskEditor = (): JSX.Element => {
   // Called when the form is submitted
   const handleTaskSave = (values: EditorState): void => {
     const newValues = {
-      ...values,
-      id: paramCase(values.name ?? ""),
-      createdDate: state?.createdDate,
+      task: {
+        ...values,
+        id: paramCase(values.name ?? ""),
+        createdDate: state?.createdDate,
+      },
+      column: values.column,
     }
     vscode.postMessage({
-      command: "kanbn.updateOrCreate",
+      command: "kanbn.save",
       taskData: newValues,
     })
   }
@@ -291,43 +298,50 @@ const TaskEditor = (): JSX.Element => {
       customFields: event.data.customFields ?? [],
     }
     setState(newState)
+
+    // Always reset the form when receiving external data to prevent feedback loops
+    function formatDateString(dateString: string | null): string | null {
+      if (dateString === null) {
+        return null
+      }
+      const date = new Date(dateString)
+      const year = date.getFullYear()
+      const month = (date.getMonth() + 1).toString().padStart(2, "0")
+      const day = date.getDate().toString().padStart(2, "0")
+
+      return `${year}-${month}-${day}`
+    }
+
+    const formValues = {
+      name: event.data.task?.name ?? "",
+      description: event.data.task?.description ?? "",
+      column: event.data.columnName,
+      progress: event.data.task?.metadata?.progress ?? 0,
+      relations: event.data.task?.relations ?? [],
+      subTasks: event.data.task?.subTasks ?? [],
+      comments: event.data.task?.comments ?? [],
+      customFields:
+        event.data.customFields?.map((customField: { name: string; type: string }) => ({
+          ...customField,
+          value:
+            customField.type === "date"
+              ? formatDateString(event.data.task?.metadata[customField.name])
+              : event.data.task?.metadata[customField.name],
+        })) ?? [],
+      tags: event.data.task?.metadata?.tags?.map((tag: string): Tag => ({ tag })) ?? [],
+      dueDate: formatDateString(event.data.task?.metadata?.due),
+      startedDate: formatDateString(event.data.task?.metadata?.started),
+      completedDate: formatDateString(event.data.task?.metadata?.completed),
+      assignedTo: event.data.task?.metadata?.assigned ?? "",
+    }
+
     if (shouldUpdateEditorState) {
       setShouldUpdateEditorState(false)
-      function formatDateString(dateString: string | null): string | null {
-        if (dateString === null) {
-          return null
-        }
-        const date = new Date(dateString)
-        const year = date.getFullYear()
-        const month = (date.getMonth() + 1).toString().padStart(2, "0")
-        const day = date.getDate().toString().padStart(2, "0")
-
-        return `${year}-${month}-${day}`
-      }
-      reset({
-        name: event.data.task?.name ?? "",
-        description: event.data.task?.description ?? "",
-        column: event.data.columnName,
-        progress: event.data.task?.metadata?.progress ?? 0,
-        relations: event.data.task?.relations ?? [],
-        subTasks: event.data.task?.subTasks ?? [],
-        comments: event.data.task?.comments ?? [],
-        customFields:
-          event.data.customFields?.map((customField: { name: string; type: string }) => ({
-            ...customField,
-            value:
-              customField.type === "date"
-                ? formatDateString(event.data.task?.metadata[customField.name])
-                : event.data.task?.metadata[customField.name],
-          })) ?? [],
-        tags: event.data.task?.metadata?.tags.map((tag: string): Tag => ({ tag })) ?? [],
-        dueDate: formatDateString(event.data.task?.metadata?.due),
-        startedDate: formatDateString(event.data.task?.metadata?.started),
-        completedDate: formatDateString(event.data.task?.metadata?.completed),
-        assignedTo: event.data.task?.metadata?.assigned ?? "",
-      })
     }
-  }, [])
+
+    // Reset the form with new values and mark as pristine (not dirty)
+    reset(formValues)
+  }, [reset, shouldUpdateEditorState])
 
   useEffect(() => {
     window.addEventListener("message", processMessage)
@@ -337,10 +351,47 @@ const TaskEditor = (): JSX.Element => {
   })
 
   const formData = watch()
+
   // Store the form state whenever it changes
   useEffect(() => {
     vscode.setState(formData)
   }, [formData])
+
+  // Send textChange messages when form data changes (debounced in the extension)
+  useEffect(() => {
+    if (state && formData && isDirty) {
+      const taskData = {
+        task: {
+          ...formData,
+          id: paramCase(formData.name ?? ""),
+          createdDate: state?.createdDate,
+        },
+        column: formData.column,
+      }
+      vscode.postMessage({
+        command: "kanbn.textChange",
+        taskData,
+      })
+    }
+  }, [formData, state, isDirty])
+
+  // Send blur messages when fields lose focus (only if form is dirty)
+  const handleFieldBlur = useCallback(() => {
+    if (state && formData && isDirty) {
+      const taskData = {
+        task: {
+          ...formData,
+          id: paramCase(formData.name ?? ""),
+          createdDate: state?.createdDate,
+        },
+        column: formData.column,
+      }
+      vscode.postMessage({
+        command: "kanbn.blur",
+        taskData,
+      })
+    }
+  }, [formData, state, isDirty])
 
   if (state === null || shouldUpdateEditorState) {
     return <div className="kanbn-task-editor">Loading...</div>
@@ -427,6 +478,7 @@ const TaskEditor = (): JSX.Element => {
                 markdownClassnames="kanbn-task-editor-description-preview"
                 inputId="description-input"
                 inputClassnames="kanbn-task-editor-field-textarea"
+                onBlur={handleFieldBlur}
               />
             </div>
             <div className="kanbn-task-editor-field kanbn-task-editor-field-subtasks">
@@ -561,6 +613,7 @@ const TaskEditor = (): JSX.Element => {
                           multiline={true}
                           markdownClassnames="kanbn-task-editor-comment-text"
                           inputClassnames="kanbn-task-editor-field-textarea"
+                          onBlur={handleFieldBlur}
                         />
                       </div>
                     </div>

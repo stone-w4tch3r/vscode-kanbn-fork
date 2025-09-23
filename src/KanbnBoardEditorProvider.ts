@@ -159,7 +159,7 @@ class KanbnBoardDocument implements vscode.CustomDocument {
 
   async saveAs(targetResource: vscode.Uri, cancellation: vscode.CancellationToken): Promise<void> {
     // Copy the entire kanbn directory structure to the new location
-    await vscode.workspace.fs.copy(this._uri, targetResource, { overwrite: false })
+    await vscode.workspace.fs.writeFile(targetResource, this._documentData)
   }
 
   async revert(cancellation: vscode.CancellationToken): Promise<void> {
@@ -208,7 +208,11 @@ export class KanbnBoardEditorProvider implements vscode.CustomEditorProvider<Kan
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
-  public showTaskPanel(document: KanbnBoardDocument, taskId: string | null, column: string | null = null): void {
+  public showTaskPanel(
+    document: KanbnBoardDocument,
+    taskId: string | null,
+    column: string | null = null
+  ): void {
     console.log("[TASK DEBUG] showTaskPanel called with taskId:", taskId, "column:", column)
     if (taskId) {
       // Open existing task using custom editor
@@ -216,17 +220,21 @@ export class KanbnBoardEditorProvider implements vscode.CustomEditorProvider<Kan
       const taskUri = vscode.Uri.file(path.join(kanbnDir, "tasks", `${taskId}.md`))
       console.log("[TASK DEBUG] Opening task with URI:", taskUri.toString())
 
-      vscode.commands.executeCommand("vscode.openWith", taskUri, "kanbn.task")
-        .then(() => {
+      vscode.commands.executeCommand("vscode.openWith", taskUri, "kanbn.task").then(
+        () => {
           console.log("[TASK DEBUG] vscode.openWith command executed successfully")
-        }, (error) => {
+        },
+        (error) => {
           console.log("[TASK DEBUG] Error executing vscode.openWith:", error)
-        })
+        }
+      )
     } else {
       // For new tasks, we'll need to create a temporary file or use a different approach
       // This is more complex and might need a different solution
       console.log("[TASK DEBUG] New task creation not yet implemented")
-      vscode.window.showInformationMessage("Creating new tasks through custom editor is not yet implemented")
+      vscode.window.showInformationMessage(
+        "Creating new tasks through custom editor is not yet implemented"
+      )
     }
   }
 
@@ -348,7 +356,7 @@ export class KanbnBoardEditorProvider implements vscode.CustomEditorProvider<Kan
       }
     })
 
-    this.updateWebview(webviewPanel, document)
+    void this.updateWebview(webviewPanel, document)
   }
 
   private readonly _onDidChangeCustomDocument = new vscode.EventEmitter<

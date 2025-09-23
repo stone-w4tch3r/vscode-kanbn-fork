@@ -1,10 +1,14 @@
 import * as vscode from "vscode"
 import * as path from "path"
-import { Kanbn, task as kanbn_task } from "@samgiz/kanbn/src/main"
+import { Kanbn } from "@samgiz/kanbn/src/main"
 import getNonce from "./getNonce"
+import { VscodeFileSystemAdapter } from "./VscodeFileSystemAdapter"
 
 // Debounce utility
-function debounce<T extends (...args: any[]) => any>(func: T, wait: number): T & { cancel: () => void } {
+function debounce<T extends (...args: any[]) => any>(
+  func: T,
+  wait: number
+): T & { cancel: () => void } {
   let timeout: NodeJS.Timeout | null = null
 
   const debounced = ((...args: Parameters<T>) => {
@@ -51,6 +55,9 @@ class KanbnTaskDocument implements vscode.CustomDocument {
   private readonly _onDidDispose = new vscode.EventEmitter<void>()
   public readonly onDidDispose = this._onDidDispose.event
 
+  // Add a callback for notifying when undo/redo should refresh the webview
+  private _onUndoRedo?: () => void
+
   private readonly _onDidChangeDocument = new vscode.EventEmitter<{
     readonly label: string
     undo(): void
@@ -71,9 +78,44 @@ class KanbnTaskDocument implements vscode.CustomDocument {
     // Task file path: /workspace/.kanbn/tasks/taskId.md
     // Board path: /workspace/
     const tasksDir = path.dirname(uri.fsPath) // .kanbn/tasks
-    const kanbnDir = path.dirname(tasksDir)   // .kanbn
-    const boardPath = path.dirname(kanbnDir)  // workspace
+    const kanbnDir = path.dirname(tasksDir) // .kanbn
+    const boardPath = path.dirname(kanbnDir) // workspace
     this._kanbn = new Kanbn(boardPath)
+  }
+
+  public get taskId(): string {
+    // Extract task ID from filename (remove .md extension)
+    const filename = path.basename(this._uri.fsPath)
+    return filename.replace(/\.md$/, "")
+  }
+
+  /**
+   * Initialize the Kanbn instance with VSCode file system adapter for webview context
+   */
+  initializeForWebview(): void {
+    // Task file path: /workspace/.kanbn/tasks/taskId.md
+    // Board path: /workspace/
+    const tasksDir = path.dirname(this._uri.fsPath) // .kanbn/tasks
+    const kanbnDir = path.dirname(tasksDir) // .kanbn
+    const boardPath = path.dirname(kanbnDir) // workspace
+
+    // Create file system adapter that works with this document
+    const fileSystemAdapter = new VscodeFileSystemAdapter(
+      this._uri,
+      () => new TextDecoder().decode(this._documentData),
+      (content: string) => {
+        // Update the document data directly - the outer makeEdit will handle undo/redo
+        this._documentData = new TextEncoder().encode(content)
+      }
+    )
+
+    // Create glob function that uses the adapter
+    const globFunction = async (pattern: string) => {
+      return await fileSystemAdapter.glob(pattern)
+    }
+
+    // Replace the regular Kanbn instance with one using the file system adapter
+    this._kanbn = new Kanbn(boardPath, fileSystemAdapter, globFunction)
   }
 
   public get uri() {
@@ -88,21 +130,33 @@ class KanbnTaskDocument implements vscode.CustomDocument {
     return this._kanbn
   }
 
-  public get taskId(): string {
-    // Extract task ID from filename (remove .md extension)
-    const filename = path.basename(this._uri.fsPath)
-    return filename.replace(/\.md$/, '')
+  setUndoRedoCallback(callback: () => void): void {
+    this._onUndoRedo = callback
+  }
+
+  dispose(): void {
+    this._onDidDispose.fire()
+    this._onDidChangeDocument.dispose()
+    this._onDidDispose.dispose()
+    this._disposables.forEach((d) => d.dispose())
   }
 
   async makeEdit(label: string, editCallback: () => Promise<void>): Promise<void> {
     // Store the current state for the undo operation
     const oldDocumentData = new Uint8Array(this._documentData)
+    console.log("makeEdit: oldDocumentData length:", oldDocumentData.length)
 
     // Execute the edit and wait for it to complete
     await editCallback()
 
     // Store the new state for the redo operation
     const newDocumentData = new Uint8Array(this._documentData)
+    console.log("makeEdit: newDocumentData length:", newDocumentData.length)
+    console.log(
+      "makeEdit: data changed?",
+      oldDocumentData.length !== newDocumentData.length ||
+        !oldDocumentData.every((val, i) => val === newDocumentData[i])
+    )
 
     // Fire the document change event with proper undo/redo implementations
     this._onDidChangeDocument.fire({
@@ -110,10 +164,18 @@ class KanbnTaskDocument implements vscode.CustomDocument {
       undo: async () => {
         // Restore the old state
         this._documentData = oldDocumentData
+        // Refresh the webview to show the undone state
+        if (this._onUndoRedo) {
+          this._onUndoRedo()
+        }
       },
       redo: async () => {
         // Restore the new state
         this._documentData = newDocumentData
+        // Refresh the webview to show the redone state
+        if (this._onUndoRedo) {
+          this._onUndoRedo()
+        }
       },
     })
   }
@@ -148,13 +210,6 @@ class KanbnTaskDocument implements vscode.CustomDocument {
         }
       },
     }
-  }
-
-  dispose(): void {
-    this._onDidDispose.fire()
-    this._onDidChangeDocument.dispose()
-    this._onDidDispose.dispose()
-    this._disposables.forEach((d) => d.dispose())
   }
 }
 
@@ -206,6 +261,18 @@ export class KanbnTaskEditorProvider implements vscode.CustomEditorProvider<Kanb
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
+    console.log('=== Task Editor resolveCustomEditor called ===')
+    console.log('Document URI:', document.uri.fsPath)
+    console.log('Task ID:', document.taskId)
+
+    // Initialize Kanbn with file system adapter for webview context
+    document.initializeForWebview()
+
+    // Set up callback to refresh webview on undo/redo
+    document.setUndoRedoCallback(() => {
+      this.updateWebview(webviewPanel, document)
+    })
+
     webviewPanel.webview.options = {
       enableScripts: true,
       localResourceRoots: [
@@ -233,30 +300,43 @@ export class KanbnTaskEditorProvider implements vscode.CustomEditorProvider<Kanb
       })
     }, 1500) // 1.5 second debounce
 
+    console.log('Setting up message handler for task editor')
     webviewPanel.webview.onDidReceiveMessage(async (message) => {
+      console.log('=== Task Editor received message ===', message.command, message)
       switch (message.command) {
         case "error":
           void vscode.window.showErrorMessage(message.text)
           return
 
         case "kanbn.updateMe":
+          console.log('Handling kanbn.updateMe')
           void this.updateWebview(webviewPanel, document)
           return
 
         case "kanbn.textChange":
+          console.log('Handling kanbn.textChange')
           // Debounced text changes
           debouncedEdit("Update task content", message.taskData)
           return
 
         case "kanbn.blur":
+          console.log('Received kanbn.blur message', message.taskData)
           // Immediate edit on blur (cancel debounce and apply immediately)
           debouncedEdit.cancel()
           await document.makeEdit("Update task content", async () => {
+            console.log('Inside makeEdit callback, taskId:', document.taskId)
             if (document.taskId) {
-              await document.kanbn.updateTask(document.taskId, message.taskData.task, message.taskData.column)
+              console.log('Calling updateTask')
+              await document.kanbn.updateTask(
+                document.taskId,
+                message.taskData.task,
+                message.taskData.column
+              )
             } else {
+              console.log('Calling createTask')
               await document.kanbn.createTask(message.taskData.task, message.taskData.column)
             }
+            console.log('Task operation completed')
           })
           return
 
@@ -265,7 +345,11 @@ export class KanbnTaskEditorProvider implements vscode.CustomEditorProvider<Kanb
           debouncedEdit.cancel()
           await document.makeEdit("Save task", async () => {
             if (document.taskId) {
-              await document.kanbn.updateTask(document.taskId, message.taskData.task, message.taskData.column)
+              await document.kanbn.updateTask(
+                document.taskId,
+                message.taskData.task,
+                message.taskData.column
+              )
             } else {
               await document.kanbn.createTask(message.taskData.task, message.taskData.column)
             }
@@ -358,9 +442,15 @@ export class KanbnTaskEditorProvider implements vscode.CustomEditorProvider<Kanb
     }
   }
 
-  private async updateWebview(webviewPanel: vscode.WebviewPanel, document: KanbnTaskDocument): Promise<void> {
+  private async updateWebview(
+    webviewPanel: vscode.WebviewPanel,
+    document: KanbnTaskDocument
+  ): Promise<void> {
+    console.log('updateWebview called for task editor')
     // Send task data to the webview (matching KanbnTaskPanel.update())
-    void webviewPanel.webview.postMessage(await this.getTaskData(document))
+    const taskData = await this.getTaskData(document)
+    console.log('Sending task data to webview:', taskData)
+    void webviewPanel.webview.postMessage(taskData)
   }
 
   private getHtmlForWebview(webview: vscode.Webview, document: KanbnTaskDocument): string {
