@@ -399,7 +399,6 @@ export class KanbnTaskEditorProvider implements vscode.CustomEditorProvider<Kanb
     return document.backup(context.destination, cancellation)
   }
 
-  // Adapted from KanbnTaskPanel._getTaskData()
   private async getTaskData(document: KanbnTaskDocument): Promise<null | any> {
     let index: any
     try {
@@ -449,7 +448,7 @@ export class KanbnTaskEditorProvider implements vscode.CustomEditorProvider<Kanb
     document: KanbnTaskDocument
   ): Promise<void> {
     console.log('updateWebview called for task editor')
-    // Send task data to the webview (matching KanbnTaskPanel.update())
+    // Send task data to the webview
     const taskData = await this.getTaskData(document)
     console.log('Sending task data to webview:', taskData)
     void webviewPanel.webview.postMessage(taskData)

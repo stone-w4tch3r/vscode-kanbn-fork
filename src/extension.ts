@@ -1,11 +1,11 @@
 import * as vscode from "vscode"
 import * as path from "path"
 import KanbnStatusBarItem from "./KanbnStatusBarItem"
-import KanbnBoardPanel from "./KanbnBoardPanel"
 import KanbnBurndownPanel from "./KanbnBurndownPanel"
 import { KanbnBoardEditorProvider } from "./KanbnBoardEditorProvider"
 import { KanbnTaskEditorProvider } from "./KanbnTaskEditorProvider"
 import { Kanbn } from "@samgiz/kanbn/src/main"
+import KanbnGlobalManager from "./KanbnGlobalManager"
 import * as fs from "fs"
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -14,40 +14,49 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(KanbnTaskEditorProvider.register(context))
 
   const kanbnStatusBarItem: KanbnStatusBarItem = new KanbnStatusBarItem(context, null)
-  const boardCache = new Map<string, KanbnTuple>()
-  class KanbnTuple {
-    kanbn: Kanbn
-    kanbnBoardPanel: KanbnBoardPanel
-    kanbnBurnDownPanel: KanbnBurndownPanel
-    constructor(boardLocation: string) {
-      if (vscode.workspace.workspaceFolders == null) {
-        throw new Error("A workspace folder should be open when creating Kanbn board panels")
-      }
-      this.kanbn = new Kanbn(boardLocation)
-      this.kanbnBurnDownPanel = KanbnBurndownPanel.create(
+  const globalManager = KanbnGlobalManager.getInstance()
+
+  // Track discovered board locations (no instances created yet)
+  const boardLocations = new Set<string>()
+
+  // Lazy-created burndown panels
+  const burndownPanels = new Map<string, KanbnBurndownPanel>()
+
+  // Helper to lazily get Kanbn instance for a board
+  function getKanbnForBoard(boardPath: string): Kanbn {
+    const dummyUri = vscode.Uri.file(`${boardPath}/.kanbn/index.md`)
+    return globalManager.getKanbnForDocument(
+      dummyUri,
+      boardPath,
+      () => "", // dummy getter
+      () => {}  // dummy setter
+    )
+  }
+
+  // Helper to lazily get or create burndown panel for a board
+  function getBurndownPanel(boardPath: string): KanbnBurndownPanel {
+    let panel = burndownPanels.get(boardPath)
+    if (!panel && vscode.workspace.workspaceFolders) {
+      const kanbn = getKanbnForBoard(boardPath)
+      panel = KanbnBurndownPanel.create(
         context.extensionPath,
         vscode.workspace.workspaceFolders[0].uri.fsPath,
-        this.kanbn,
-        boardLocation
+        kanbn,
+        boardPath
       )
-      this.kanbnBoardPanel = new KanbnBoardPanel(
-        context.extensionPath,
-        vscode.workspace.workspaceFolders[0].uri.fsPath,
-        this.kanbn,
-        boardLocation,
-        this.kanbnBurnDownPanel
-      )
+      burndownPanels.set(boardPath, panel)
     }
+    return panel!
   }
 
   async function chooseBoard(): Promise<string | undefined> {
-    if (boardCache.size === 0) {
+    if (boardLocations.size === 0) {
       void vscode.window.showErrorMessage(
         "No boards detected. Open a workspace with Kanbn boards or add Additional Boards to the global user configuration"
       )
       return
     }
-    const boardNames: string[] = [...boardCache.keys()]
+    const boardNames: string[] = [...boardLocations]
     const options: vscode.QuickPickOptions = {
       placeHolder: "Select a board to open",
       canPickMany: false,
@@ -57,7 +66,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   function populateBoardCache(): void {
-    const boardLocations = new Set<string>()
+    // Clear existing locations and rediscover
+    boardLocations.clear()
 
     // Get globally accessible board locations.
     vscode.workspace
@@ -90,19 +100,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         }
       }
     }
-    for (const boardLocation of boardLocations) {
-      const kanbnTuple = new KanbnTuple(boardLocation)
-      boardCache.set(boardLocation, kanbnTuple)
 
-      // Initialise file watcher
+    // Set up file watchers for discovered board locations
+    for (const boardLocation of boardLocations) {
       const fileWatcher = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(vscode.Uri.file(`${boardLocation}/.kanbn`), "**")
       )
 
       fileWatcher.onDidChange(() => {
-        void kanbnStatusBarItem.update(kanbnTuple.kanbn)
-        void kanbnTuple.kanbnBoardPanel.update()
-        void kanbnTuple.kanbnBurnDownPanel.update()
+        // Lazily get instances only when file changes occur
+        const kanbn = getKanbnForBoard(boardLocation)
+        void kanbnStatusBarItem.update(kanbn)
+
+        // Update burndown panel if it exists
+        const panel = burndownPanels.get(boardLocation)
+        if (panel) {
+          void panel.update()
+        }
       })
     }
   }
@@ -130,7 +144,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return newBoardName
       }
       let boardName = await getNewBoardName()
-      let kanbnTuple: KanbnTuple
       // If the input prompt wasn't cancelled, initialise kanbn
       while (boardName !== undefined) {
         const boardLocation: string = `${vscode.workspace.workspaceFolders[0].uri.fsPath}/.kanbn_boards/${boardName}`
@@ -142,11 +155,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           continue
         }
         fs.mkdirSync(boardLocation, { recursive: true })
-        kanbnTuple = new KanbnTuple(boardLocation)
-        void kanbnTuple.kanbn.initialise({
+        // Initialize the board using lazy-loaded Kanbn instance
+        const kanbn = getKanbnForBoard(boardLocation)
+        void kanbn.initialise({
           name: boardName,
         })
-        // Initialise file watcher
+
+        // Add the new board to our locations set
+        boardLocations.add(boardLocation)
+
+        // Initialize file watcher
         const fileWatcher = vscode.workspace.createFileSystemWatcher(
           new vscode.RelativePattern(
             vscode.workspace.workspaceFolders[0],
@@ -154,11 +172,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
           )
         )
         fileWatcher.onDidChange(() => {
-          void kanbnStatusBarItem.update(kanbnTuple.kanbn)
-          void kanbnTuple.kanbnBoardPanel.update()
-          void kanbnTuple.kanbnBurnDownPanel.update()
+          const kanbn = getKanbnForBoard(boardLocation)
+          void kanbnStatusBarItem.update(kanbn)
+
+          // Update burndown panel if it exists
+          const panel = burndownPanels.get(boardLocation)
+          if (panel) {
+            void panel.update()
+          }
         })
-        boardCache.set(boardName, kanbnTuple)
         void vscode.window.showInformationMessage(`Created Kanbn board '${boardLocation}'.`)
         break
       }
@@ -174,14 +196,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         return
       }
 
-      const kanbnTuple = boardCache.get(board)
-      if (kanbnTuple === undefined) {
-        return
-      }
+      // If kanbn is initialised, view the kanbn board using custom editor
+      const indexPath = `${board}/.kanbn/index.md`
+      const indexUri = vscode.Uri.file(indexPath)
+      await vscode.commands.executeCommand('vscode.openWith', indexUri, 'kanbn.board')
 
-      // If kanbn is initialised, view the kanbn board
-      void kanbnTuple.kanbnBoardPanel.show()
-      void kanbnStatusBarItem.update(kanbnTuple.kanbn)
+      // Update status bar with lazy-loaded kanbn instance
+      const kanbn = getKanbnForBoard(board)
+      void kanbnStatusBarItem.update(kanbn)
     })
   )
 
@@ -192,14 +214,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const board = await chooseBoard()
       if (board === undefined) return
 
-      // Set the node process directory and import kanbn
-      const kanbnTuple = boardCache.get(board)
-      if (kanbnTuple === undefined) {
-        return
-      }
+      // Create a new task file and open it with the custom editor
+      const kanbn = getKanbnForBoard(board)
+      const index = await kanbn.getIndex()
 
-      // Open the task webview
-      kanbnTuple.kanbnBoardPanel.showTaskPanel(null)
+      // Generate a unique task ID for new task
+      const taskId = `new-task-${Date.now()}`
+      const taskPath = `${board}/.kanbn/tasks/${taskId}.md`
+      const taskUri = vscode.Uri.file(taskPath)
+
+      // Create an empty task file
+      await vscode.workspace.fs.writeFile(taskUri, new TextEncoder().encode(''))
+
+      // Open with custom task editor
+      await vscode.commands.executeCommand('vscode.openWith', taskUri, 'kanbn.task')
     })
   )
 
@@ -216,13 +244,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const board = await chooseBoard()
       if (board === undefined) return
 
-      // Set the node process directory and import kanbn
-      const kanbnTuple = boardCache.get(board)
-      if (kanbnTuple === undefined) {
-        return
-      }
-
-      const index = await kanbnTuple.kanbn.getIndex()
+      // Get kanbn instance for the board
+      const kanbn = getKanbnForBoard(board)
+      const index = await kanbn.getIndex()
       const startedColumns: string[] = index.options?.startedColumns ?? []
       const completedColumns: string[] = index.options?.completedColumns ?? []
       const otherColumns: string[] = Object.keys(index.columns).filter(
@@ -233,7 +257,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         [...startedColumns, ...otherColumns, ...completedColumns].map(async (columnName) => ({
           columnName,
           tasks: await Promise.all(
-            index.columns[columnName].map(async (taskId) => await kanbnTuple.kanbn.getTask(taskId))
+            index.columns[columnName].map(async (taskId) => await kanbn.getTask(taskId))
           ),
         }))
       )
@@ -253,8 +277,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       // Show QuickPick
       const qp = await vscode.window.showQuickPick(quickPickItems)
       if (qp?.detail !== undefined) {
-        // Open the task webview
-        kanbnTuple.kanbnBoardPanel.showTaskPanel(qp?.detail)
+        // Open the task using custom editor
+        const taskPath = `${board}/.kanbn/tasks/${qp.detail}.md`
+        const taskUri = vscode.Uri.file(taskPath)
+        await vscode.commands.executeCommand('vscode.openWith', taskUri, 'kanbn.task')
       }
     })
   )
@@ -265,13 +291,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const board = await chooseBoard()
       if (board === undefined) return
 
-      const kanbnTuple = boardCache.get(board)
-      if (kanbnTuple === undefined) return
+      // Get or create burndown panel for the board
+      const burndownPanel = getBurndownPanel(board)
+      const kanbn = getKanbnForBoard(board)
 
       // If kanbn is initialised, view the burndown chart
-      kanbnTuple.kanbnBurnDownPanel.show()
-      void kanbnTuple.kanbnBurnDownPanel.update()
-      void kanbnStatusBarItem.update(kanbnTuple.kanbn)
+      burndownPanel.show()
+      void burndownPanel.update()
+      void kanbnStatusBarItem.update(kanbn)
     })
   )
 
@@ -281,13 +308,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const board = await chooseBoard()
       if (board === undefined) return
 
-      const kanbnTuple = boardCache.get(board)
-      if (kanbnTuple === undefined) return
+      // Get kanbn instance for the board
+      const kanbn = getKanbnForBoard(board)
 
       // Get a list of tracked tasks
       let tasks: string[] = []
       try {
-        tasks = [...(await kanbnTuple.kanbn.findTrackedTasks())]
+        tasks = [...(await kanbn.findTrackedTasks())]
       } catch (e) {
         console.log(e)
       }
@@ -303,10 +330,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       })
       if (archiveTaskIds !== undefined && archiveTaskIds.length > 0) {
         for (const archiveTaskId of archiveTaskIds) {
-          void kanbnTuple.kanbn.archiveTask(archiveTaskId)
+          void kanbn.archiveTask(archiveTaskId)
         }
-        void kanbnTuple.kanbnBoardPanel.update()
-        void kanbnStatusBarItem.update(kanbnTuple.kanbn)
+        void kanbnStatusBarItem.update(kanbn)
         if (
           vscode.workspace.getConfiguration("kanbn").get<boolean>("showTaskNotifications") === true
         ) {
@@ -323,13 +349,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("kanbn.restoreTasks", async () => {
       const board = await chooseBoard()
       if (board === undefined) return
-      const kanbnTuple = boardCache.get(board)
-      if (kanbnTuple === undefined) return
+      // Get kanbn instance for the board
+      const kanbn = getKanbnForBoard(board)
 
       // Get a list of archived tasks
       let archivedTasks: string[] = []
       try {
-        archivedTasks = await kanbnTuple.kanbn.listArchivedTasks()
+        archivedTasks = await kanbn.listArchivedTasks()
       } catch (e) {
         console.log(e)
       }
@@ -345,7 +371,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       })
       if (restoreTaskIds !== undefined && restoreTaskIds.length > 0) {
         // Load index
-        const index = await kanbnTuple.kanbn.getIndex()
+        const index = await kanbn.getIndex()
 
         // Prompt for a column to restore the tasks into
         const restoreColumn = await vscode.window.showQuickPick(
@@ -356,13 +382,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         )
         if (restoreColumn !== undefined) {
           for (const restoreTaskId of restoreTaskIds) {
-            await kanbnTuple.kanbn.restoreTask(
+            await kanbn.restoreTask(
               restoreTaskId,
               restoreColumn === "None (use original)" ? null : restoreColumn
             )
           }
-          void kanbnTuple.kanbnBoardPanel.update()
-          void kanbnStatusBarItem.update(kanbnTuple.kanbn)
+          void kanbnStatusBarItem.update(kanbn)
           if (vscode.workspace.getConfiguration("kanbn").get("showTaskNotifications") === true) {
             void vscode.window.showInformationMessage(
               `Restored ${restoreTaskIds.length} task${restoreTaskIds.length === 1 ? "" : "s"}.`
@@ -376,9 +401,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Handle configuration changes.
   vscode.workspace.onDidChangeConfiguration(() => {
     populateBoardCache()
-    // Update all board panels in case we need to show/hide certain buttons.
-    for (const [, kanbnTuple] of boardCache) {
-      void kanbnTuple.kanbnBoardPanel.update()
-    }
+    // Configuration changed - no need to update panels since we use custom editors now
   })
 }
