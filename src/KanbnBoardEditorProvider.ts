@@ -3,6 +3,7 @@ import * as path from "path"
 import getNonce from "./getNonce"
 import { Kanbn, index as kanbn_index, task as kanbn_task } from "@samgiz/kanbn/src/main"
 import { VscodeFileSystemAdapter } from "./VscodeFileSystemAdapter"
+import KanbnGlobalManager from "./KanbnGlobalManager"
 
 const sortByFields: Record<string, string> = {
   Name: "name",
@@ -78,23 +79,17 @@ class KanbnBoardDocument implements vscode.CustomDocument {
     const kanbnDir = path.dirname(this._uri.fsPath)
     const boardPath = path.dirname(kanbnDir)
 
-    // Create file system adapter that works with this document
-    const fileSystemAdapter = new VscodeFileSystemAdapter(
+    // Get global Kanbn instance for this board with document-specific adapter
+    const globalManager = KanbnGlobalManager.getInstance()
+    this._kanbn = globalManager.getKanbnForDocument(
       this._uri,
+      boardPath,
       () => new TextDecoder().decode(this._documentData),
       (content: string) => {
         // Update the document data directly - the outer makeEdit will handle undo/redo
         this._documentData = new TextEncoder().encode(content)
       }
     )
-
-    // Create glob function that uses the adapter
-    const globFunction = async (pattern: string) => {
-      return await fileSystemAdapter.glob(pattern)
-    }
-
-    // Replace the regular Kanbn instance with one using the file system adapter
-    this._kanbn = new Kanbn(boardPath, fileSystemAdapter, globFunction)
   }
 
   public get uri() {
@@ -112,6 +107,12 @@ class KanbnBoardDocument implements vscode.CustomDocument {
   }
 
   dispose(): void {
+    // Clean up global manager resources
+    const kanbnDir = path.dirname(this._uri.fsPath)
+    const boardPath = path.dirname(kanbnDir)
+    const globalManager = KanbnGlobalManager.getInstance()
+    globalManager.cleanupDocument(this._uri, boardPath)
+
     this._onDidDispose.fire()
     this._onDidChangeDocument.dispose()
     this._onDidDispose.dispose()

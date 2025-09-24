@@ -3,6 +3,7 @@ import * as path from "path"
 import { Kanbn } from "@samgiz/kanbn/src/main"
 import getNonce from "./getNonce"
 import { VscodeFileSystemAdapter } from "./VscodeFileSystemAdapter"
+import KanbnGlobalManager from "./KanbnGlobalManager"
 
 // Debounce utility
 function debounce<T extends (...args: any[]) => any>(
@@ -99,23 +100,17 @@ class KanbnTaskDocument implements vscode.CustomDocument {
     const kanbnDir = path.dirname(tasksDir) // .kanbn
     const boardPath = path.dirname(kanbnDir) // workspace
 
-    // Create file system adapter that works with this document
-    const fileSystemAdapter = new VscodeFileSystemAdapter(
+    // Get global Kanbn instance for this board with document-specific adapter
+    const globalManager = KanbnGlobalManager.getInstance()
+    this._kanbn = globalManager.getKanbnForDocument(
       this._uri,
+      boardPath,
       () => new TextDecoder().decode(this._documentData),
       (content: string) => {
         // Update the document data directly - the outer makeEdit will handle undo/redo
         this._documentData = new TextEncoder().encode(content)
       }
     )
-
-    // Create glob function that uses the adapter
-    const globFunction = async (pattern: string) => {
-      return await fileSystemAdapter.glob(pattern)
-    }
-
-    // Replace the regular Kanbn instance with one using the file system adapter
-    this._kanbn = new Kanbn(boardPath, fileSystemAdapter, globFunction)
   }
 
   public get uri() {
@@ -135,6 +130,13 @@ class KanbnTaskDocument implements vscode.CustomDocument {
   }
 
   dispose(): void {
+    // Clean up global manager resources
+    const tasksDir = path.dirname(this._uri.fsPath) // .kanbn/tasks
+    const kanbnDir = path.dirname(tasksDir) // .kanbn
+    const boardPath = path.dirname(kanbnDir) // workspace
+    const globalManager = KanbnGlobalManager.getInstance()
+    globalManager.cleanupDocument(this._uri, boardPath)
+
     this._onDidDispose.fire()
     this._onDidChangeDocument.dispose()
     this._onDidDispose.dispose()

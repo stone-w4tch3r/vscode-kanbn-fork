@@ -6,6 +6,11 @@ import * as fs from "fs"
  * VSCode file system adapter that implements the fs.promises interface
  * for use with the kanbn library in webview contexts
  */
+interface DocumentCallbacks {
+  getContent: () => string
+  setContent: (content: string) => void
+}
+
 export class VscodeFileSystemAdapter {
   private documentUri: vscode.Uri
   private getDocumentContent: () => string
@@ -13,6 +18,9 @@ export class VscodeFileSystemAdapter {
   private onDidChangeEmitter = new vscode.EventEmitter<vscode.Uri>()
   private fileContentMap = new Map<string, string>()
   private fileExistsMap = new Map<string, boolean>()
+
+  // Support for multiple documents
+  private documentCallbacks = new Map<string, DocumentCallbacks>()
 
   constructor(
     documentUri: vscode.Uri,
@@ -22,6 +30,33 @@ export class VscodeFileSystemAdapter {
     this.documentUri = documentUri
     this.getDocumentContent = getDocumentContent
     this.setDocumentContent = setDocumentContent
+
+    // Add primary document callbacks
+    this.documentCallbacks.set(documentUri.fsPath, {
+      getContent: getDocumentContent,
+      setContent: setDocumentContent
+    })
+  }
+
+  /**
+   * Add callbacks for additional documents
+   */
+  addDocumentCallbacks(
+    documentUri: vscode.Uri,
+    getDocumentContent: () => string,
+    setDocumentContent: (content: string) => void
+  ): void {
+    this.documentCallbacks.set(documentUri.fsPath, {
+      getContent: getDocumentContent,
+      setContent: setDocumentContent
+    })
+  }
+
+  /**
+   * Remove callbacks for a document
+   */
+  removeDocumentCallbacks(documentUri: vscode.Uri): void {
+    this.documentCallbacks.delete(documentUri.fsPath)
   }
 
   /**
@@ -30,8 +65,8 @@ export class VscodeFileSystemAdapter {
   async access(filePath: string, mode?: number): Promise<void> {
     const normalizedPath = this.normalizePath(filePath)
 
-    // For the main index file, it always exists in custom editor context
-    if (this.isMainIndexFile(normalizedPath)) {
+    // For files with document callbacks, they always exist in the virtual system
+    if (this.documentCallbacks.has(normalizedPath)) {
       return
     }
 
@@ -57,9 +92,10 @@ export class VscodeFileSystemAdapter {
   async readFile(filePath: string, options?: { encoding: string }): Promise<string> {
     const normalizedPath = this.normalizePath(filePath)
 
-    // For the main index file, return the document content
-    if (this.isMainIndexFile(normalizedPath)) {
-      return this.getDocumentContent()
+    // Check if this file has document callbacks (is currently open in an editor)
+    const documentCallbacks = this.documentCallbacks.get(normalizedPath)
+    if (documentCallbacks) {
+      return documentCallbacks.getContent()
     }
 
     // For other files, check virtual file system first
@@ -81,13 +117,12 @@ export class VscodeFileSystemAdapter {
   async writeFile(filePath: string, data: string): Promise<void> {
     const normalizedPath = this.normalizePath(filePath)
     console.log('VscodeFileSystemAdapter.writeFile called:', filePath)
-    console.log('Document URI:', this.documentUri.fsPath)
-    console.log('Is main file?', this.isMainIndexFile(normalizedPath))
 
-    // If this is the document we're managing, update through our callback
-    if (this.isMainIndexFile(normalizedPath)) {
-      console.log('Updating document content through callback')
-      this.setDocumentContent(data)
+    // Check if this file has document callbacks (is currently open in an editor)
+    const documentCallbacks = this.documentCallbacks.get(normalizedPath)
+    if (documentCallbacks) {
+      console.log('Updating document content through callback for:', normalizedPath)
+      documentCallbacks.setContent(data)
       return
     }
 
@@ -187,13 +222,6 @@ export class VscodeFileSystemAdapter {
     return path.normalize(filePath).replace(/\\/g, '/')
   }
 
-  /**
-   * Check if the given path is the main index file being edited
-   */
-  private isMainIndexFile(normalizedPath: string): boolean {
-    const documentPath = this.normalizePath(this.documentUri.fsPath)
-    return normalizedPath === documentPath
-  }
 
   /**
    * Find if a file is currently open in VSCode
