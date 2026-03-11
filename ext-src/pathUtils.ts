@@ -5,7 +5,7 @@ export function resolveBoardPath (
   boardPath: string,
   basePath: string | null
 ): string {
-  if (boardPath === '' || boardPath.trim() === '') {
+  if (boardPath.trim() === '') {
     if (basePath !== null) {
       return basePath
     }
