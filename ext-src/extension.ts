@@ -56,7 +56,7 @@ export async function activate (context: vscode.ExtensionContext): Promise<void>
     const globalBoards = vscode.workspace.getConfiguration('kanbn', null).inspect<string[]>('additionalBoards')?.globalValue
     globalBoards?.forEach(boardLocation => {
       try {
-        boardLocations.add(resolveBoardPath(boardLocation, null))
+        boardLocations.add(resolveBoardPath(null, boardLocation))
       } catch (e) {
         void vscode.window.showWarningMessage(
           `Invalid board path "${boardLocation}": ${(e as Error).message}`
@@ -71,7 +71,7 @@ export async function activate (context: vscode.ExtensionContext): Promise<void>
       const workspaceBoards = inspectResult?.workspaceFolderValue ?? inspectResult?.workspaceValue
       workspaceBoards?.forEach(boardLocation => {
         try {
-          boardLocations.add(resolveBoardPath(boardLocation, workspaceFolder.uri.fsPath))
+          boardLocations.add(resolveBoardPath(workspaceFolder.uri.fsPath, boardLocation))
         } catch (e) {
           void vscode.window.showWarningMessage(
             `Invalid board path "${boardLocation}": ${(e as Error).message}`

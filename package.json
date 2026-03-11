@@ -139,7 +139,11 @@
     "start": "react-scripts start",
     "build": "./scripts/build-non-split.js && tsc -p tsconfig.extension.json",
     "test": "react-scripts test --env=jsdom",
-    "eject": "react-scripts eject"
+    "eject": "react-scripts eject",
+    "test-jest": "jest"
+  },
+  "jest": {
+    "preset": "ts-jest"
   },
   "devDependencies": {
     "@types/dateformat": "^5.0.0",

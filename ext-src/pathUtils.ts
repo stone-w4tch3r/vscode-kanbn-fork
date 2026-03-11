@@ -2,18 +2,15 @@ import * as path from 'path'
 import * as os from 'os'
 
 export function resolveBoardPath (
-  boardPath: string,
-  basePath: string | null
+  basePath: string | null,
+  boardPath: string
 ): string {
   if (boardPath.trim() === '') {
-    if (basePath !== null) {
-      return basePath
-    }
     throw new Error('Empty path provided')
   }
 
   let expandedPath = boardPath
-  if (expandedPath.startsWith('~')) {
+  if (expandedPath.startsWith('~/')) {
     expandedPath = path.join(os.homedir(), expandedPath.slice(1))
   }
 
